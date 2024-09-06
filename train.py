@@ -295,14 +295,14 @@ class CountPredictor(nn.Module):
         
         return out.squeeze(-1)
 
-
 class SpawnPredictor(nn.Module):
-    def __init__(self, input_size, hidden_size, output_size=4, num_layers=2, dropout=0.2):
+    def __init__(self, input_size, hidden_size, output_size=4, num_layers=2, dropout=0.3):
         super(SpawnPredictor, self).__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=dropout)
         self.fc = nn.Linear(hidden_size, output_size)
+        self.dropout = nn.Dropout(dropout)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
@@ -317,12 +317,11 @@ class SpawnPredictor(nn.Module):
         c0 = torch.zeros(self.num_layers, batch_size, self.hidden_size).to(x.device)
     
         out, _ = self.lstm(x, (h0, c0))
-        out = self.fc(out[:, -1, :])
+        out = self.dropout(out[:, -1, :])
+        out = self.fc(out)
     
-        # Strictly enforce longitude range: 100E to 180E
+        # Allow for more spread in both longitude and latitude
         lon = self.sigmoid(out[:, 0]) * 80 + 100
-    
-        # Strictly enforce latitude range: 0N to 40N
         lat = self.sigmoid(out[:, 1]) * 40
     
         # Month and temperature influence on lon/lat
@@ -330,11 +329,11 @@ class SpawnPredictor(nn.Module):
         temp = x[:, 0, 4]   # Assuming temperature is the fifth input feature
     
         # Adjust longitude based on month and temperature
-        lon = lon + (month - 0.5) * 10 + (temp - 0.5) * 5
+        lon = lon + (month - 0.5) * 20 + (temp - 0.5) * 10
         lon = torch.clamp(lon, 100, 180)
     
         # Adjust latitude based on month and temperature
-        lat = lat + (month - 0.5) * 5 + (temp - 0.5) * 2.5
+        lat = lat + (month - 0.5) * 15 + (temp - 0.5) * 7.5
         lat = torch.clamp(lat, 0, 40)
     
         # Combine the outputs
@@ -503,7 +502,7 @@ def save_models(avg_daily_prob, monthly_probs):
         with open(os.path.join(MODEL_DIR, 'other_data.pkl'), 'wb') as f:
             pickle.dump(other_data, f)
         
-        print(f"Models and data saved to {MODEL_DIR}")
+        print(f"Models and data saved to {MODEL_DIR}")		
     else:
         print("Models not initialized. Nothing to save.")
 
@@ -529,17 +528,17 @@ def predict_spawn_location(year, month, temperature):
     
     pred_spawn_2d = pred_spawn.cpu().numpy()[0]
     
-    # Adjust longitude based on month
+    # Adjust longitude based on month and temperature
     longitude_base = 100 + (month / 12) * 80  # Shift eastward as the year progresses
-    longitude = np.clip(longitude_base + pred_spawn_2d[0] * 20, 100, 180)
+    longitude = np.clip(longitude_base + pred_spawn_2d[0] * 30 + (temperature - 16) * 2, 100, 180)
     
-    # Adjust latitude based on month
-    latitude_base = 20 + np.sin((month - 1) * np.pi / 6) * 10  # Seasonal north-south movement
-    latitude = np.clip(latitude_base + pred_spawn_2d[1] * 10, 0, 40)
+    # Adjust latitude based on month and temperature
+    latitude_base = 20 + np.sin((month - 1) * np.pi / 6) * 15  # Seasonal movement
+    latitude = np.clip(latitude_base + pred_spawn_2d[1] * 20 + (temperature - 16) * 1.5, 0, 40)
     
     # Add random noise to predictions
-    longitude = np.clip(longitude + np.random.normal(0, 2), 100, 180)
-    latitude = np.clip(latitude + np.random.normal(0, 1), 0, 40)
+    longitude = np.clip(longitude + np.random.normal(0, 3), 100, 180)
+    latitude = np.clip(latitude + np.random.normal(0, 2), 0, 40)
     
     return [longitude, latitude]
 
